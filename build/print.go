@@ -20,6 +20,7 @@ package build
 import (
 	"bytes"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/bazelbuild/buildtools/tables"
@@ -30,6 +31,13 @@ const (
 	listIndentation   = 4 // Indentation of multiline expressions
 	defIndentation    = 8 // Indentation of multiline function definitions
 )
+
+var breakLine = func() string {
+	if runtime.GOOS == "windows" {
+		return "\r\n"
+	}
+	return "\n"
+}()
 
 // Format returns the formatted form of the given BUILD file.
 func Format(f *File) []byte {
@@ -87,7 +95,7 @@ func (p *printer) newline() {
 		for i, com := range p.comment {
 			if i > 0 {
 				p.trim()
-				p.printf("\n%*s", p.margin, "")
+				p.printf("%s%*s", breakLine, p.margin, "")
 			}
 			p.printf("%s", strings.TrimSpace(com.Token))
 		}
@@ -95,7 +103,7 @@ func (p *printer) newline() {
 	}
 
 	p.trim()
-	p.printf("\n%*s", p.margin, "")
+	p.printf("%s%*s", breakLine, p.margin, "")
 }
 
 // softNewline postpones a call to newline to the next call of p.newlineIfNeeded()
