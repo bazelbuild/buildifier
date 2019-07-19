@@ -1,0 +1,32 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "go_default_library",
+    srcs = [
+        "types.go",
+        "warn.go",
+        "warn_bazel.go",
+    ],
+    importpath = "github.com/bazelbuild/buildtools/warn",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//build:go_default_library",
+        "//bzlenv:go_default_library",
+        "//edit:go_default_library",
+        "//tables:go_default_library",
+    ],
+)
+
+go_test(
+    name = "warn_test",
+    size = "small",
+    srcs = [
+        "types_test.go",
+        "warn_bazel_test.go",
+        "warn_test.go",
+    ],
+    embed = [":go_default_library"],
+    deps = [
+        "//testutils",
+    ],
+)

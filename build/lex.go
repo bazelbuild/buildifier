@@ -26,13 +26,27 @@ import (
 	"unicode/utf8"
 )
 
-// BuildFilenames is a collection of filenames in lowercase that are treated as BUILD files.
-var BuildFilenames = map[string]bool{
-	"build":           true,
-	"build.bazel":     true,
-	"workspace":       true,
-	"workspace.bazel": true,
-	"stdin":           true,
+// FileType represents a type of a file (default (for .bzl files), BUILD, or WORKSPACE).
+// Certain formatting or refactoring rules can be applied to several file types, so they support
+// bitwise operations: `type1 | type2` can represent a scope (e.g. BUILD and WORKSPACE files) and
+// `scope & fileType` can be used to check whether a file type belongs to a scope.
+type FileType int
+
+const (
+	// TypeDefault represents .bzl or other Starlark files
+	TypeDefault FileType = 1 << iota
+	// TypeBuild represents BUILD files
+	TypeBuild
+	// TypeWorkspace represents WORKSPACE files
+	TypeWorkspace
+)
+
+func (t FileType) String() string {
+	return [...]string{
+		".bzl",
+		"BUILD",
+		"WORKSPACE",
+	}[t]
 }
 
 // ParseBuild parses a file, marks it as a BUILD file and returns the corresponding parse tree.
@@ -42,7 +56,19 @@ func ParseBuild(filename string, data []byte) (*File, error) {
 	in := newInput(filename, data)
 	f, err := in.parse()
 	if f != nil {
-		f.Build = true
+		f.Type = TypeBuild
+	}
+	return f, err
+}
+
+// ParseWorkspace parses a file, marks it as a WORKSPACE file and returns the corresponding parse tree.
+//
+// The filename is used only for generating error messages.
+func ParseWorkspace(filename string, data []byte) (*File, error) {
+	in := newInput(filename, data)
+	f, err := in.parse()
+	if f != nil {
+		f.Type = TypeWorkspace
 	}
 	return f, err
 }
@@ -54,21 +80,55 @@ func ParseDefault(filename string, data []byte) (*File, error) {
 	in := newInput(filename, data)
 	f, err := in.parse()
 	if f != nil {
-		f.Build = false
+		f.Type = TypeDefault
 	}
 	return f, err
 }
 
+func getFileType(basename string) FileType {
+	basename = strings.ToLower(basename)
+	if basename == "stdin" {
+		return TypeBuild // For compatibility
+	}
+	ext := filepath.Ext(basename)
+	if ext == ".bzl" || ext == ".sky" {
+		return TypeDefault
+	}
+	base := basename[:len(basename)-len(ext)]
+	switch {
+	case ext == ".build" || base == "build":
+		return TypeBuild
+	case ext == ".workspace" || base == "workspace":
+		return TypeWorkspace
+	}
+	return TypeDefault
+}
+
 // Parse parses the input data and returns the corresponding parse tree.
 //
-// Uses the filename to detect the formatting type (either build or default) and calls
-// either ParseBuild or to ParseDefault correspondingly.
+// Uses the filename to detect the formatting type (build, workspace, or default) and calls
+// ParseBuild, ParseWorkspace, or ParseDefault correspondingly.
 func Parse(filename string, data []byte) (*File, error) {
 	basename := filepath.Base(filename)
-	if BuildFilenames[strings.ToLower(basename)] {
+	switch getFileType(basename) {
+	case TypeBuild:
 		return ParseBuild(filename, data)
+	case TypeWorkspace:
+		return ParseWorkspace(filename, data)
 	}
 	return ParseDefault(filename, data)
+}
+
+// ParseError contains information about the error encountered during parsing.
+type ParseError struct {
+	Message  string
+	Filename string
+	Pos      Position
+}
+
+// Error returns a string representation of the parse error.
+func (e ParseError) Error() string {
+	return fmt.Sprintf("%s:%d:%d: %v", e.Filename, e.Pos.Line, e.Pos.LineRune, e.Message)
 }
 
 // An input represents a single input file being parsed.
@@ -127,7 +187,7 @@ func (in *input) parse() (f *File, err error) {
 			if e == in.parseError {
 				err = in.parseError
 			} else {
-				err = fmt.Errorf("%s:%d:%d: internal error: %v", in.filename, in.pos.Line, in.pos.LineRune, e)
+				err = ParseError{Message: fmt.Sprintf("internal error: %v", e), Filename: in.filename, Pos: in.pos}
 			}
 		}
 	}()
@@ -152,7 +212,7 @@ func (in *input) Error(s string) {
 	if s == "syntax error" && in.lastToken != "" {
 		s += " near " + in.lastToken
 	}
-	in.parseError = fmt.Errorf("%s:%d:%d: %v", in.filename, in.pos.Line, in.pos.LineRune, s)
+	in.parseError = ParseError{Message: s, Filename: in.filename, Pos: in.pos}
 	panic(in.parseError)
 }
 

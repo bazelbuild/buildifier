@@ -31,19 +31,19 @@ const (
 
 // Format returns the formatted form of the given BUILD or bzl file.
 func Format(f *File) []byte {
-	pr := &printer{buildMode: f.Build}
+	pr := &printer{fileType: f.Type}
 	pr.file(f)
 	return pr.Bytes()
 }
 
 // FormatString returns the string form of the given expression.
 func FormatString(x Expr) string {
-	buildMode := true // for compatibility
+	fileType := TypeBuild // for compatibility
 	if file, ok := x.(*File); ok {
-		buildMode = file.Build
+		fileType = file.Type
 	}
 
-	pr := &printer{buildMode: buildMode}
+	pr := &printer{fileType: fileType}
 	switch x := x.(type) {
 	case *File:
 		pr.file(x)
@@ -55,7 +55,7 @@ func FormatString(x Expr) string {
 
 // A printer collects the state during printing of a file or expression.
 type printer struct {
-	buildMode    bool      // whether should be printed in a build mode.
+	fileType     FileType  // different rules can be applied to different file types.
 	bytes.Buffer           // output buffer
 	comment      []Comment // pending end-of-line comments
 	margin       int       // left margin (indent), a number of spaces
@@ -226,8 +226,8 @@ func (p *printer) compactStmt(s1, s2 Expr) bool {
 	} else if isCommentBlock(s1) || isCommentBlock(s2) {
 		// Standalone comment blocks shouldn't be attached to other statements
 		return false
-	} else if p.buildMode && p.level == 0 {
-		// Top-level statements in a BUILD file
+	} else if p.fileType != TypeDefault && p.level == 0 {
+		// Top-level statements in a BUILD or WORKSPACE file
 		return false
 	} else if isFunctionDefinition(s1) || isFunctionDefinition(s2) {
 		// On of the statements is a function definition
@@ -252,28 +252,20 @@ func isCommentBlock(x Expr) bool {
 	return ok
 }
 
-// isCodeBlock checks if the statement is a code block (def, if, for, etc.)
-func isCodeBlock(x Expr) bool {
-	switch x.(type) {
-	case *DefStmt:
-		return true
-	case *ForStmt:
-		return true
-	case *IfStmt:
-		return true
-	default:
-		return false
-	}
-}
-
 // isFunctionDefinition checks if the statement is a def code block
 func isFunctionDefinition(x Expr) bool {
-	switch x.(type) {
-	case *DefStmt:
-		return true
-	default:
+	_, ok := x.(*DefStmt)
+	return ok
+}
+
+// isDifferentLines reports whether two positions belong to different lines.
+// If one of the positions is null (Line == 0), it's not a real position but probably an indicator
+// of manually inserted node. Return false in this case
+func isDifferentLines(p1, p2 *Position) bool {
+	if p1.Line == 0 || p2.Line == 0 {
 		return false
 	}
+	return p1.Line != p2.Line
 }
 
 // Expression formatting.
@@ -420,7 +412,7 @@ func (p *printer) expr(v Expr, outerPrec int) {
 		addParen(precSuffix)
 		p.expr(v.X, precSuffix)
 		_, xEnd := v.X.Span()
-		isMultiline := v.NamePos.Line > xEnd.Line
+		isMultiline := isDifferentLines(&v.NamePos, &xEnd)
 		if isMultiline {
 			p.margin += listIndentation
 			p.breakline()
@@ -647,14 +639,14 @@ func (p *printer) expr(v Expr, outerPrec int) {
 			p.comment = append(p.comment, block.ElsePos.Comment().Suffix...)
 			p.nestedStatements(block.False)
 		}
-		case *ForClause:
-			p.printf("for ")
-			p.expr(v.Vars, precLow)
-			p.printf(" in ")
-			p.expr(v.X, precLow)
-		case *IfClause:
-			p.printf("if ")
-			p.expr(v.Cond, precLow)
+	case *ForClause:
+		p.printf("for ")
+		p.expr(v.Vars, precLow)
+		p.printf(" in ")
+		p.expr(v.X, precLow)
+	case *IfClause:
+		p.printf("if ")
+		p.expr(v.Cond, precLow)
 	}
 
 	// Add closing parenthesis if needed.
@@ -705,18 +697,22 @@ func (p *printer) useCompactMode(start *Position, list *[]Expr, end *End, mode s
 	// In the Default printing mode try to keep the original printing style.
 	// Non-top-level statements and lists of arguments of a function definition
 	// should also keep the original style regardless of the mode.
-	if p.level != 0 || !p.buildMode || mode == modeDef {
+	if p.level != 0 || p.fileType == TypeDefault || mode == modeDef {
 		// If every element (including the brackets) ends on the same line where the next element starts,
-		// use the compact mode, otherwise use multiline mode
-		previousEnd := start.Line
+		// use the compact mode, otherwise use multiline mode.
+		// If an node's line number is 0, it means it doesn't appear in the original file,
+		// its position shouldn't be taken into account.
+		previousEnd := start
 		for _, x := range *list {
 			start, end := x.Span()
-			if start.Line != previousEnd {
+			if isDifferentLines(&start, previousEnd) {
 				return false
 			}
-			previousEnd = end.Line
+			if end.Line != 0 {
+				previousEnd = &end
+			}
 		}
-		if end != nil && previousEnd != end.Pos.Line {
+		if end != nil && isDifferentLines(previousEnd, &end.Pos) {
 			return false
 		}
 		return true

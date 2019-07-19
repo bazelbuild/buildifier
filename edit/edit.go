@@ -230,7 +230,7 @@ func RemoveEmptyPackage(f *build.File) *build.File {
 		}
 		all = append(all, stmt)
 	}
-	return &build.File{Path: f.Path, Comments: f.Comments, Stmt: all, Build: true}
+	return &build.File{Path: f.Path, Comments: f.Comments, Stmt: all, Type: build.TypeBuild}
 }
 
 // InsertAfter inserts an expression after index i.
@@ -339,7 +339,7 @@ func DeleteRule(f *build.File, rule *build.Rule) *build.File {
 		}
 		all = append(all, stmt)
 	}
-	return &build.File{Path: f.Path, Comments: f.Comments, Stmt: all, Build: true}
+	return &build.File{Path: f.Path, Comments: f.Comments, Stmt: all, Type: build.TypeBuild}
 }
 
 // DeleteRuleByName returns the AST without the rules that have the
@@ -357,7 +357,7 @@ func DeleteRuleByName(f *build.File, name string) *build.File {
 			all = append(all, stmt)
 		}
 	}
-	return &build.File{Path: f.Path, Comments: f.Comments, Stmt: all, Build: true}
+	return &build.File{Path: f.Path, Comments: f.Comments, Stmt: all, Type: build.TypeBuild}
 }
 
 // DeleteRuleByKind removes the rules of the specified kind from the AST.
@@ -375,7 +375,7 @@ func DeleteRuleByKind(f *build.File, kind string) *build.File {
 			all = append(all, stmt)
 		}
 	}
-	return &build.File{Path: f.Path, Comments: f.Comments, Stmt: all, Build: true}
+	return &build.File{Path: f.Path, Comments: f.Comments, Stmt: all, Type: build.TypeBuild}
 }
 
 // AllLists returns all the lists concatenated in an expression.
@@ -682,6 +682,21 @@ func DictionarySet(dict *build.DictExpr, key string, value build.Expr) build.Exp
 	return nil
 }
 
+// DictionaryGet looks for the key in the dictionary expression, and returns the
+// current value. If it is unset, it returns nil.
+func DictionaryGet(dict *build.DictExpr, key string) build.Expr {
+	for _, e := range dict.List {
+		kv, ok := e.(*build.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		if k, ok := kv.Key.(*build.StringExpr); ok && k.Value == key {
+			return kv.Value
+		}
+	}
+	return nil
+}
+
 // DictionaryDelete looks for the key in the dictionary expression. If the key exists,
 // it removes the key-value pair and returns it. Otherwise it returns nil.
 func DictionaryDelete(dict *build.DictExpr, key string) (deleted build.Expr) {
@@ -738,9 +753,9 @@ func EditFunction(v build.Expr, name string, f func(x *build.CallExpr, stk []bui
 }
 
 // UsedSymbols returns the set of symbols used in the BUILD file (variables, function names).
-func UsedSymbols(f *build.File) map[string]bool {
+func UsedSymbols(stmt build.Expr) map[string]bool {
 	symbols := make(map[string]bool)
-	build.Walk(f, func(expr build.Expr, stack []build.Expr) {
+	build.Walk(stmt, func(expr build.Expr, stack []build.Expr) {
 		literal, ok := expr.(*build.Ident)
 		if !ok {
 			return
@@ -830,10 +845,10 @@ func InsertLoad(stmts []build.Expr, location string, from, to []string) []build.
 
 	var all []build.Expr
 	added := false
-	for _, stmt := range stmts {
+	for i, stmt := range stmts {
 		_, isComment := stmt.(*build.CommentBlock)
-		c, isString := stmt.(*build.StringExpr)
-		isDocString := isString && c.Start.Line == 1 && c.Start.LineRune == 1
+		_, isString := stmt.(*build.StringExpr)
+		isDocString := isString && i == 0
 		if isComment || isDocString || added {
 			all = append(all, stmt)
 			continue

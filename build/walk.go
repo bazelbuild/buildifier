@@ -42,6 +42,15 @@ func Edit(v Expr, f func(x Expr, stk []Expr) Expr) Expr {
 	return walk1(&v, &stack, f)
 }
 
+// EditChildren is similar to Edit but doesn't visit the initial node, instead goes
+// directly to its children.
+func EditChildren(v Expr, f func(x Expr, stk []Expr) Expr) {
+	stack := []Expr{v}
+	WalkOnce(v, func(x *Expr) {
+		walk1(x, &stack, f)
+	})
+}
+
 // walk1 is a helper function for Walk, WalkWithPostfix, and Edit.
 func walk1(v *Expr, stack *[]Expr, f func(x Expr, stk []Expr) Expr) Expr {
 	if v == nil {
@@ -65,8 +74,8 @@ func walk1(v *Expr, stack *[]Expr, f func(x Expr, stk []Expr) Expr) Expr {
 func WalkOnce(v Expr, f func(x *Expr)) {
 	switch v := v.(type) {
 	case *File:
-		for _, stmt := range v.Stmt {
-			f(&stmt)
+		for i := range v.Stmt {
+			f(&v.Stmt[i])
 		}
 	case *DotExpr:
 		f(&v.X)
@@ -137,25 +146,25 @@ func WalkOnce(v Expr, f func(x *Expr)) {
 		f(&v.Test)
 		f(&v.Else)
 	case *DefStmt:
-		for _, p := range v.Params {
-			f(&p)
+		for i := range v.Params {
+			f(&v.Params[i])
 		}
-		for _, s := range v.Body {
-			f(&s)
+		for i := range v.Body {
+			f(&v.Body[i])
 		}
 	case *IfStmt:
 		f(&v.Cond)
-		for _, s := range v.True {
-			f(&s)
+		for i := range v.True {
+			f(&v.True[i])
 		}
-		for _, s := range v.False {
-			f(&s)
+		for i := range v.False {
+			f(&v.False[i])
 		}
 	case *ForStmt:
 		f(&v.Vars)
 		f(&v.X)
-		for _, s := range v.Body {
-			f(&s)
+		for i := range v.Body {
+			f(&v.Body[i])
 		}
 	case *ReturnStmt:
 		if v.Result != nil {

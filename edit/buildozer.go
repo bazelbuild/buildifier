@@ -10,7 +10,8 @@ distributed under the License is distributed on an "AS IS" BASIS,
  See the License for the specific language governing permissions and
  limitations under the License.
 */
-// Buildozer is a tool for programatically editing BUILD files.
+
+// Buildozer is a tool for programmatically editing BUILD files.
 
 package edit
 
@@ -253,7 +254,16 @@ func findInsertionIndex(env CmdEnvironment) (bool, int, error) {
 }
 
 func cmdNewLoad(opts *Options, env CmdEnvironment) (*build.File, error) {
-	env.File.Stmt = InsertLoad(env.File.Stmt, env.Args[0], env.Args[1:], env.Args[1:])
+	from := env.Args[1:]
+	to := append([]string{}, from...)
+	for i := range from {
+		if s := strings.SplitN(from[i], "=", 2); len(s) == 2 {
+			to[i] = s[0]
+			from[i] = s[1]
+		}
+	}
+
+	env.File.Stmt = InsertLoad(env.File.Stmt, env.Args[0], from, to)
 	return env.File, nil
 }
 
@@ -445,6 +455,85 @@ func cmdCopyNoOverwrite(opts *Options, env CmdEnvironment) (*build.File, error) 
 	return copyAttributeBetweenRules(env, attrName, from)
 }
 
+// cmdDictAdd adds a key to a dict, if that key does _not_ exit already.
+func cmdDictAdd(opts *Options, env CmdEnvironment) (*build.File, error) {
+	attr := env.Args[0]
+	args := env.Args[1:]
+
+	dict := &build.DictExpr{}
+	currDict, ok := env.Rule.Attr(attr).(*build.DictExpr)
+	if ok {
+		dict = currDict
+	}
+
+	for _, x := range args {
+		kv := strings.Split(x, ":")
+		expr := build.StringExpr{
+			Value:       kv[1],
+			TripleQuote: false,
+			Token:       "",
+		}
+
+		prev := DictionaryGet(dict, kv[0])
+		if prev == nil {
+			// Only set the value if the value is currently unset.
+			DictionarySet(dict, kv[0], &expr)
+		}
+	}
+	env.Rule.SetAttr(attr, dict)
+	return env.File, nil
+}
+
+// cmdDictSet adds a key to a dict, overwriting any previous values.
+func cmdDictSet(opts *Options, env CmdEnvironment) (*build.File, error) {
+	attr := env.Args[0]
+	args := env.Args[1:]
+
+	dict := &build.DictExpr{}
+	currDict, ok := env.Rule.Attr(attr).(*build.DictExpr)
+	if ok {
+		dict = currDict
+	}
+
+	for _, x := range args {
+		kv := strings.Split(x, ":")
+		expr := build.StringExpr{
+			Value:       kv[1],
+			TripleQuote: false,
+			Token:       "",
+		}
+		// Set overwrites previous values.
+		DictionarySet(dict, kv[0], &expr)
+	}
+	env.Rule.SetAttr(attr, dict)
+	return env.File, nil
+}
+
+// cmdDictRemove removes a key from a dict.
+func cmdDictRemove(opts *Options, env CmdEnvironment) (*build.File, error) {
+	attr := env.Args[0]
+	args := env.Args[1:]
+
+	thing := env.Rule.Attr(attr)
+	dictAttr, ok := thing.(*build.DictExpr)
+	if !ok {
+		return env.File, nil
+	}
+
+	for _, x := range args {
+		// should errors here be flagged?
+		DictionaryDelete(dictAttr, x)
+		env.Rule.SetAttr(attr, dictAttr)
+	}
+
+	// If the removal results in the dict having no contents, delete the attribute (stay clean!)
+	if dictAttr == nil || len(dictAttr.List) == 0 {
+		env.Rule.DelAttr(attr)
+	}
+
+	return env.File, nil
+}
+
 func copyAttributeBetweenRules(env CmdEnvironment, attrName string, from string) (*build.File, error) {
 	fromRule := FindRuleByName(env.File, from)
 	if fromRule == nil {
@@ -476,6 +565,7 @@ func cmdFix(opts *Options, env CmdEnvironment) (*build.File, error) {
 // CommandInfo provides a command function and info on incoming arguments.
 type CommandInfo struct {
 	Fn       func(*Options, CmdEnvironment) (*build.File, error)
+	PerRule  bool
 	MinArg   int
 	MaxArg   int
 	Template string
@@ -484,23 +574,26 @@ type CommandInfo struct {
 // AllCommands associates the command names with their function and number
 // of arguments.
 var AllCommands = map[string]CommandInfo{
-	"add":               {cmdAdd, 2, -1, "<attr> <value(s)>"},
-	"new_load":          {cmdNewLoad, 1, -1, "<path> <symbol(s)>"},
-	"comment":           {cmdComment, 1, 3, "<attr>? <value>? <comment>"},
-	"print_comment":     {cmdPrintComment, 0, 2, "<attr>? <value>?"},
-	"delete":            {cmdDelete, 0, 0, ""},
-	"fix":               {cmdFix, 0, -1, "<fix(es)>?"},
-	"move":              {cmdMove, 3, -1, "<old_attr> <new_attr> <value(s)>"},
-	"new":               {cmdNew, 2, 4, "<rule_kind> <rule_name> [(before|after) <relative_rule_name>]"},
-	"print":             {cmdPrint, 0, -1, "<attribute(s)>"},
-	"remove":            {cmdRemove, 1, -1, "<attr> <value(s)>"},
-	"rename":            {cmdRename, 2, 2, "<old_attr> <new_attr>"},
-	"replace":           {cmdReplace, 3, 3, "<attr> <old_value> <new_value>"},
-	"substitute":        {cmdSubstitute, 3, 3, "<attr> <old_regexp> <new_template>"},
-	"set":               {cmdSet, 2, -1, "<attr> <value(s)>"},
-	"set_if_absent":     {cmdSetIfAbsent, 2, -1, "<attr> <value(s)>"},
-	"copy":              {cmdCopy, 2, 2, "<attr> <from_rule>"},
-	"copy_no_overwrite": {cmdCopyNoOverwrite, 2, 2, "<attr> <from_rule>"},
+	"add":               {cmdAdd, true, 2, -1, "<attr> <value(s)>"},
+	"new_load":          {cmdNewLoad, false, 1, -1, "<path> <[to=]from(s)>"},
+	"comment":           {cmdComment, true, 1, 3, "<attr>? <value>? <comment>"},
+	"print_comment":     {cmdPrintComment, true, 0, 2, "<attr>? <value>?"},
+	"delete":            {cmdDelete, true, 0, 0, ""},
+	"fix":               {cmdFix, true, 0, -1, "<fix(es)>?"},
+	"move":              {cmdMove, true, 3, -1, "<old_attr> <new_attr> <value(s)>"},
+	"new":               {cmdNew, false, 2, 4, "<rule_kind> <rule_name> [(before|after) <relative_rule_name>]"},
+	"print":             {cmdPrint, true, 0, -1, "<attribute(s)>"},
+	"remove":            {cmdRemove, true, 1, -1, "<attr> <value(s)>"},
+	"rename":            {cmdRename, true, 2, 2, "<old_attr> <new_attr>"},
+	"replace":           {cmdReplace, true, 3, 3, "<attr> <old_value> <new_value>"},
+	"substitute":        {cmdSubstitute, true, 3, 3, "<attr> <old_regexp> <new_template>"},
+	"set":               {cmdSet, true, 2, -1, "<attr> <value(s)>"},
+	"set_if_absent":     {cmdSetIfAbsent, true, 2, -1, "<attr> <value(s)>"},
+	"copy":              {cmdCopy, true, 2, 2, "<attr> <from_rule>"},
+	"copy_no_overwrite": {cmdCopyNoOverwrite, true, 2, 2, "<attr> <from_rule>"},
+	"dict_add":          {cmdDictAdd, true, 2, -1, "<attr> <(key:value)(s)>"},
+	"dict_set":          {cmdDictSet, true, 2, -1, "<attr> <(key:value)(s)>"},
+	"dict_remove":       {cmdDictRemove, true, 2, -1, "<attr> <key(s)>"},
 }
 
 func expandTargets(f *build.File, rule string) ([]*build.Rule, error) {
@@ -532,15 +625,11 @@ func filterRules(opts *Options, rules []*build.Rule) (result []*build.Rule) {
 		return rules
 	}
 	for _, rule := range rules {
-		acceptableType := false
 		for _, filterType := range opts.FilterRuleTypes {
 			if rule.Kind() == filterType {
-				acceptableType = true
+				result = append(result, rule)
 				break
 			}
-		}
-		if acceptableType {
-			result = append(result, rule)
 		}
 	}
 	return
@@ -728,8 +817,14 @@ func rewrite(opts *Options, commandsForFile commandsForFile) *rewriteResult {
 		}
 		targets = filterRules(opts, targets)
 		for _, cmd := range commands {
-			for _, r := range targets {
-				cmdInfo := AllCommands[cmd.tokens[0]]
+			cmdInfo := AllCommands[cmd.tokens[0]]
+			// Depending on whether a transformation is rule-specific or not, it should be applied to
+			// every rule that satisfies the filter or just once to the file.
+			cmdTargets := targets
+			if !cmdInfo.PerRule {
+				cmdTargets = []*build.Rule{nil}
+			}
+			for _, r := range cmdTargets {
 				record := &apipb.Output_Record{}
 				newf, err := cmdInfo.Fn(opts, CmdEnvironment{f, r, vars, absPkg, cmd.tokens[1:], record})
 				if len(record.Fields) != 0 {

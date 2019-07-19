@@ -20,10 +20,11 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/bazelbuild/buildtools/testutils"
 )
 
 func TestParse(t *testing.T) {
@@ -77,48 +78,10 @@ func toJSON(v interface{}) string {
 	return string(s)
 }
 
-// diff returns the output of running diff on b1 and b2.
-func diff(b1, b2 []byte) (data []byte, err error) {
-	f1, err := ioutil.TempFile("", "testdiff")
-	if err != nil {
-		return nil, err
-	}
-	defer os.Remove(f1.Name())
-	defer f1.Close()
-
-	f2, err := ioutil.TempFile("", "testdiff")
-	if err != nil {
-		return nil, err
-	}
-	defer os.Remove(f2.Name())
-	defer f2.Close()
-
-	f1.Write(b1)
-	f2.Write(b2)
-
-	data, err = exec.Command("diff", "-u", f1.Name(), f2.Name()).CombinedOutput()
-	if len(data) > 0 {
-		// diff exits with a non-zero status when the files don't match.
-		// Ignore that failure as long as we get output.
-		err = nil
-	}
-	return
-}
-
-// tdiff logs the diff output to t.Error.
-func tdiff(t *testing.T, a, b string) {
-	data, err := diff([]byte(a), []byte(b))
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	t.Error(string(data))
-}
-
 // Compare expected and actual values, failing and outputting a diff of the two values if they are not deeply equal
 func compare(t *testing.T, actual, expected interface{}) {
 	if !reflect.DeepEqual(expected, actual) {
-		tdiff(t, toJSON(expected), toJSON(actual))
+		testutils.Tdiff(t, []byte(toJSON(expected)), []byte(toJSON(actual)))
 	}
 }
 
@@ -134,19 +97,19 @@ var parseTests = []struct {
 `,
 		out: &File{
 			Path: "BUILD",
-			Build: true,
+			Type: TypeBuild,
 			Stmt: []Expr{
 				&CallExpr{
 					X: &Ident{
 						NamePos: Position{1, 1, 0},
-						Name: "go_binary",
+						Name:    "go_binary",
 					},
 					ListStart: Position{1, 10, 9},
 					List: []Expr{
 						&BinaryExpr{
 							X: &Ident{
 								NamePos: Position{1, 11, 10},
-								Name: "name",
+								Name:    "name",
 							},
 							OpStart: Position{1, 16, 15},
 							Op:      "=",
@@ -168,14 +131,14 @@ var parseTests = []struct {
 		in: `foo.bar.baz(name = "x")`,
 		out: &File{
 			Path: "test",
-			Build: false,
+			Type: TypeDefault,
 			Stmt: []Expr{
 				&CallExpr{
 					X: &DotExpr{
 						X: &DotExpr{
 							X: &Ident{
 								NamePos: Position{1, 1, 0},
-								Name: "foo",
+								Name:    "foo",
 							},
 							Dot:     Position{1, 4, 3},
 							NamePos: Position{1, 5, 4},
@@ -190,7 +153,7 @@ var parseTests = []struct {
 						&BinaryExpr{
 							X: &Ident{
 								NamePos: Position{1, 13, 12},
-								Name: "name",
+								Name:    "name",
 							},
 							OpStart: Position{1, 18, 17},
 							Op:      "=",
@@ -224,5 +187,62 @@ var parseTests = []struct {
                    resources = ":R_src_release_%sdpi" % dpi)
     for dpi in dpis ]
 `,
+	},
+	{
+		in: `load(":foo.bzl", "foo", """bar""", baz="foo", foo="""baz""")
+`,
+		out: &File{
+			Path: "BUILD",
+			Type: TypeBuild,
+			Stmt: []Expr{
+				&LoadStmt{
+					Load: Position{1, 1, 0},
+					Module: &StringExpr{
+						Value: ":foo.bzl",
+						Token: "\":foo.bzl\"",
+						Start: Position{1, 6, 5},
+						End:   Position{1, 16, 15},
+					},
+					From: []*Ident{
+						{
+							Name:    "foo",
+							NamePos: Position{1, 19, 18},
+						},
+						{
+							Name:    "bar",
+							NamePos: Position{1, 28, 27},
+						},
+						{
+							Name:    "foo",
+							NamePos: Position{1, 41, 40},
+						},
+						{
+							Name:    "baz",
+							NamePos: Position{1, 54, 53},
+						},
+					},
+					To: []*Ident{
+						{
+							Name:    "foo",
+							NamePos: Position{1, 19, 18},
+						},
+						{
+							Name:    "bar",
+							NamePos: Position{1, 28, 27},
+						},
+						{
+							Name:    "baz",
+							NamePos: Position{1, 36, 35},
+						},
+						{
+							Name:    "foo",
+							NamePos: Position{1, 47, 46},
+						},
+					},
+					Rparen:       End{Pos: Position{1, 60, 59}},
+					ForceCompact: true,
+				},
+			},
+		},
 	},
 }

@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -30,9 +32,10 @@ import (
 	"github.com/bazelbuild/buildtools/build"
 	"github.com/bazelbuild/buildtools/differ"
 	"github.com/bazelbuild/buildtools/tables"
+	"github.com/bazelbuild/buildtools/warn"
 )
 
-var buildifierVersion = "redacted"
+var buildVersion = "redacted"
 var buildScmRevision = "redacted"
 
 var (
@@ -42,11 +45,13 @@ var (
 	vflag         = flag.Bool("v", false, "print verbose information on standard error")
 	dflag         = flag.Bool("d", false, "alias for -mode=diff")
 	mode          = flag.String("mode", "", "formatting mode: check, diff, or fix (default fix)")
-	path          = flag.String("path", "", "assume BUILD file has this path relative to the workspace directory")
+	lint          = flag.String("lint", "", "lint mode: off, warn, or fix (default off)")
+	warnings      = flag.String("warnings", "all", "comma-separated warnings used in the lint mode or \"all\" (default all)")
+	filePath      = flag.String("path", "", "assume BUILD file has this path relative to the workspace directory")
 	tablesPath    = flag.String("tables", "", "path to JSON file with custom table definitions which will replace the built-in tables")
 	addTablesPath = flag.String("add_tables", "", "path to JSON file with custom table definitions which will be merged with the built-in tables")
 	version       = flag.Bool("version", false, "Print the version of buildifier")
-	inputType     = flag.String("type", "auto", "Input file type: build (for BUILD files), bzl (for .bzl files) or auto (default, based on the filename)")
+	inputType     = flag.String("type", "auto", "Input file type: build (for BUILD files), bzl (for .bzl files), workspace (for WORKSPACE files), or auto (default, based on the filename)")
 
 	// Debug flags passed through to rewrite.go
 	allowSort = stringList("allowsort", "additional sort contexts to treat as safe")
@@ -61,7 +66,7 @@ func stringList(name, help string) func() []string {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `usage: buildifier [-d] [-v] [-mode=mode] [-path=path] [files...]
+	fmt.Fprintf(os.Stderr, `usage: buildifier [-d] [-v] [-mode=mode] [-lint=lint_mode] [-path=path] [files...]
 
 Buildifier applies a standard formatting to the named BUILD files.
 The mode flag selects the processing: check, diff, fix, or print_if_changed.
@@ -71,6 +76,14 @@ In fix mode, buildifier updates the files that need reformatting and,
 if the -v flag is given, prints their names to standard error.
 In print_if_changed mode, buildifier shows the file contents it would write.
 The default mode is fix. -d is an alias for -mode=diff.
+
+The lint flag selects the lint mode to be used: off, warn, fix.
+In off mode, the linting is not performed.
+In warn mode, buildifier prints warnings for common mistakes and suboptimal
+coding practices that include links providing more context and fix suggestions.
+In fix mode, buildifier updates the files with all warning resolutions produced
+by automated fixes.
+The default lint mode is off.
 
 If no files are listed, buildifier reads a BUILD file from standard input. In
 fix mode, it writes the reformatted BUILD file to standard output, even if no
@@ -91,7 +104,7 @@ func main() {
 	args := flag.Args()
 
 	if *version {
-		fmt.Printf("buildifier version: %s \n", buildifierVersion)
+		fmt.Printf("buildifier version: %s \n", buildVersion)
 		fmt.Printf("buildifier scm revision: %s \n", buildScmRevision)
 
 		if len(args) == 0 {
@@ -105,11 +118,11 @@ func main() {
 
 	// Check input type.
 	switch *inputType {
-	case "build", "bzl", "auto":
+	case "build", "bzl", "workspace", "auto":
 		// ok
 
 	default:
-		fmt.Fprintf(os.Stderr, "buildifier: unrecognized input type %s; valid types are build, bzl, auto\n", *inputType)
+		fmt.Fprintf(os.Stderr, "buildifier: unrecognized input type %s; valid types are build, bzl, workspace, auto\n", *inputType)
 		os.Exit(2)
 	}
 
@@ -134,9 +147,37 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Check lint mode.
+	switch *lint {
+	case "":
+		*lint = "off"
+
+	case "off":
+		// ok
+
+	case "warn", "fix":
+		if *mode != "fix" {
+			fmt.Fprintf(os.Stderr, "buildifier: lint mode %s is only compatible with --mode=fix\n", *lint)
+			os.Exit(2)
+		}
+
+	default:
+		fmt.Fprintf(os.Stderr, "buildifier: unrecognized lint mode %s; valid modes are warn and fix\n", *lint)
+		os.Exit(2)
+	}
+
+	// Check lint warnings
+	var warningsList []string
+	switch *warnings {
+	case "", "all":
+		warningsList = warn.AllWarnings
+	default:
+		warningsList = strings.Split(*warnings, ",")
+	}
+
 	// If the path flag is set, must only be formatting a single file.
 	// It doesn't make sense for multiple files to have the same path.
-	if (*path != "" || *mode == "print_if_changed") && len(args) > 1 {
+	if (*filePath != "" || *mode == "print_if_changed") && len(args) > 1 {
 		fmt.Fprintf(os.Stderr, "buildifier: can only format one file when using -path flag or -mode=print_if_changed\n")
 		os.Exit(2)
 	}
@@ -167,9 +208,9 @@ func main() {
 		if *mode == "fix" {
 			*mode = "pipe"
 		}
-		processFile("stdin", data, *inputType)
+		processFile("stdin", data, *inputType, *lint, warningsList)
 	} else {
-		processFiles(args, *inputType)
+		processFiles(args, *inputType, *lint, warningsList)
 	}
 
 	if err := diff.Run(); err != nil {
@@ -184,7 +225,7 @@ func main() {
 	os.Exit(exitCode)
 }
 
-func processFiles(files []string, inputType string) {
+func processFiles(files []string, inputType, lint string, warningsList []string) {
 	// Decide how many file reads to run in parallel.
 	// At most 100, and at most one per 10 input files.
 	nworker := 100
@@ -229,7 +270,7 @@ func processFiles(files []string, inputType string) {
 			exitCode = 3
 			continue
 		}
-		processFile(file, res.data, inputType)
+		processFile(file, res.data, inputType, lint, warningsList)
 	}
 }
 
@@ -251,7 +292,7 @@ var diff *differ.Differ
 
 // processFile processes a single file containing data.
 // It has been read from filename and should be written back if fixing.
-func processFile(filename string, data []byte, inputType string) {
+func processFile(filename string, data []byte, inputType, lint string, warningsList []string) {
 	defer func() {
 		if err := recover(); err != nil {
 			fmt.Fprintf(os.Stderr, "buildifier: %s: internal error: %v\n", filename, err)
@@ -273,8 +314,19 @@ func processFile(filename string, data []byte, inputType string) {
 		return
 	}
 
-	if *path != "" {
-		f.Path = *path
+	pkg := getPackageName(filename)
+	switch lint {
+	case "warn":
+		hasWarnings := warn.PrintWarnings(f, pkg, warningsList, false)
+		if hasWarnings == true {
+			exitCode = 4
+		}
+	case "fix":
+		warn.FixWarnings(f, pkg, warningsList, *vflag)
+	}
+
+	if *filePath != "" {
+		f.Path = *filePath
 	}
 	beforeRewrite := build.Format(f)
 	var info build.RewriteInfo
@@ -378,6 +430,8 @@ func getParser(inputType string) func(filename string, data []byte) (*build.File
 		return build.ParseBuild
 	case "auto":
 		return build.Parse
+	case "workspace":
+		return build.ParseWorkspace
 	default:
 		return build.ParseDefault
 	}
@@ -397,4 +451,19 @@ func writeTemp(data []byte) (file string, err error) {
 		return "", fmt.Errorf("writing temporary file: %v", err)
 	}
 	return name, nil
+}
+
+// getPackageName returns the package name of a file by searching for a WORKSPACE file
+func getPackageName(filename string) string {
+	dirs := filepath.SplitList(path.Dir(filename))
+	parent := ""
+	index := len(dirs) - 1
+	for i, chunk := range dirs {
+		parent = path.Join(parent, chunk)
+		metadata := path.Join(parent, "METADATA")
+		if _, err := os.Stat(metadata); !os.IsNotExist(err) {
+			index = i
+		}
+	}
+	return strings.Join(dirs[index+1:], "/")
 }

@@ -29,6 +29,7 @@ go_test(
     size = "small",
     srcs = [
         "checkfile_test.go",
+        "lex_test.go",
         "parse_test.go",
         "print_test.go",
         "quote_test.go",
@@ -43,5 +44,8 @@ go_test(
         "parse.y.go",
     ],
     embed = [":go_default_library"],
-    deps = ["//tables:go_default_library"],
+    deps = [
+        "//tables:go_default_library",
+        "//testutils",
+    ],
 )

@@ -1,4 +1,4 @@
-load("@bazel_skylib//:lib.bzl", "shell")
+load("@bazel_skylib//lib:shell.bzl", "shell")
 
 def _buildifier_impl(ctx):
     # That way we don't depends on defaults encoded in the binary but always
@@ -8,6 +8,9 @@ def _buildifier_impl(ctx):
         "-v=%s" % str(ctx.attr.verbose).lower(),
         "-showlog=%s" % str(ctx.attr.show_log).lower(),
     ]
+
+    if ctx.attr.lint_mode:
+        args.append("-lint=%s" % ctx.attr.lint_mode)
 
     exclude_patterns_str = ""
     if ctx.attr.exclude_patterns:
@@ -33,7 +36,7 @@ def _buildifier_impl(ctx):
         executable = out_file,
     )]
 
-buildifier = rule(
+_buildifier = rule(
     implementation = _buildifier_impl,
     attrs = {
         "verbose": attr.bool(
@@ -47,20 +50,32 @@ buildifier = rule(
             doc = "Formatting mode",
             values = ["check", "diff", "fix"],
         ),
+        "lint_mode": attr.string(
+            doc = "Linting mode",
+            values = ["", "fix", "warn"],
+        ),
         "exclude_patterns": attr.string_list(
             allow_empty = True,
             doc = "A list of glob patterns passed to the find command. E.g. './vendor/*' to exclude the Go vendor directory",
         ),
         "_buildifier": attr.label(
-            default = Label("@com_github_bazelbuild_buildtools//buildifier"),
+            default = "@com_github_bazelbuild_buildtools//buildifier",
             cfg = "host",
-            allow_single_file = True,
             executable = True,
         ),
         "_runner": attr.label(
-            default = Label("@com_github_bazelbuild_buildtools//buildifier:runner.bash.template"),
+            default = "@com_github_bazelbuild_buildtools//buildifier:runner.bash.template",
             allow_single_file = True,
         ),
     },
     executable = True,
 )
+
+def buildifier(**kwargs):
+    tags = kwargs.get("tags", [])
+    if "manual" not in tags:
+        tags.append("manual")
+        kwargs["tags"] = tags
+    _buildifier(
+        **kwargs
+    )

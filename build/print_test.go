@@ -27,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/bazelbuild/buildtools/tables"
+	"github.com/bazelbuild/buildtools/testutils"
 )
 
 // exists reports whether the named file exists.
@@ -143,21 +144,7 @@ func TestPrintBzlAsBuild(t *testing.T) {
 // and returns a function to call to change back to the current directory.
 // This allows tests to assert on alias finding between absolute and relative labels.
 func findTests(t *testing.T, suffix string) ([]string, func()) {
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), "build")); err != nil {
-		t.Fatal(err)
-	}
-	outs, err := filepath.Glob("testdata/*" + suffix)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(outs) == 0 {
-		t.Fatal("Didn't find any test cases")
-	}
-	return outs, func() { os.Chdir(wd) }
+	return testutils.FindTests(t, "build", "testdata/*"+suffix)
 }
 
 // testPrint is a helper for testing the printer.
@@ -195,7 +182,7 @@ func testPrint(t *testing.T, in, out string, isBuild bool) {
 
 	if !bytes.Equal(ndata, golden) {
 		t.Errorf("formatted %s incorrectly: diff shows -%s, +ours", base, filepath.Base(out))
-		tdiff(t, string(golden), string(ndata))
+		testutils.Tdiff(t, golden, ndata)
 		return
 	}
 }
